@@ -18,10 +18,11 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
+import torchvision.transforms as transforms
 from tqdm import tqdm
 
 from utils.general import xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, resample_segments, \
-    clean_str
+    clean_str, colorstr
 from utils.torch_utils import torch_distributed_zero_first
 
 # Parameters
@@ -1049,3 +1050,112 @@ def autosplit(path='../coco128', weights=(0.9, 0.1, 0.0)):  # from utils.dataset
         if img.suffix[1:] in img_formats:
             with open(path / txt[i], 'a') as f:
                 f.write(str(img) + '\n')  # add image to txt file
+
+
+# create this function for mean-teacher training
+# TODO: add weak and strong augment dataset for both label and un_labeled dataset
+def create_dataloader_trian_mt(path_l, path_u, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False,
+                               pad=0.0, rect=False,
+                               rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+    # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
+    with torch_distributed_zero_first(rank):
+        # load the label datasets
+        dataset_l = LoadImagesAndLabels(path_l, imgsz, batch_size,
+                                        augment=augment,  # augment images
+                                        hyp=hyp,  # augmentation hyperparameters
+                                        rect=rect,  # rectangular training
+                                        cache_images=cache,
+                                        single_cls=opt.single_cls,
+                                        stride=int(stride),
+                                        pad=pad,
+                                        image_weights=image_weights,
+                                        prefix=prefix)
+
+        # load unlabel datasets
+        dataset_u = LoadDataUnlabeled(path_u, imgsz, prefix=colorstr('train_u: '))
+
+    batch_size = min(batch_size, len(dataset_l), len(dataset_u))
+    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+    sampler_l = torch.utils.data.distributed.DistributedSampler(dataset_l) if rank != -1 else None
+    sampler_u = torch.utils.data.distributed.DistributedSampler(dataset_u) if rank != -1 else None
+    loader_l = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
+    # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
+    dataloader_l = loader_l(dataset_l,
+                            batch_size=batch_size,
+                            num_workers=nw,
+                            sampler=sampler_l,
+                            pin_memory=True,
+                            collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
+    dataloader_u = torch.utils.data.DataLoader(dataset_u,
+                                               batch_size=batch_size,
+                                               sampler=sampler_u,
+                                               pin_memory=True)
+    return dataloader_l, dataset_l, dataloader_u
+
+
+class LoadDataUnlabeled(Dataset):
+    """
+    # Create to load un_labeled data for detection
+    #  range [0.0, 1.0]
+    """
+
+    def __init__(self, path, img_size=640, prefix=''):
+        self.img_size = img_size
+        self.path = path
+        self.weak_transform = transforms.Compose([
+            transforms.Resize((self.img_size, self.img_size)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5)
+        ])
+        self.strong_transform = transforms.Compose([
+            transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([transforms.GaussianBlur(7, [0.1, 2.0])], p=0.5)
+        ])
+        self.to_tensor = transforms.ToTensor()
+
+        try:
+            f = []  # image files
+            for p in path if isinstance(path, list) else [path]:
+                p = Path(p)  # os-agnostic
+                if p.is_dir():  # dir
+                    f += glob.glob(str(p / '**' / '*.*'), recursive=True)
+                    # f = list(p.rglob('**/*.*'))  # pathlib
+                elif p.is_file():  # file
+                    with open(p, 'r') as t:
+                        t = t.read().strip().splitlines()
+                        parent = str(p.parent) + os.sep
+                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
+                        # f += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
+                else:
+                    raise Exception(f'{prefix}{p} does not exist')
+            self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
+            assert self.img_files, f'{prefix}No images found'
+        except Exception as e:
+            raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
+
+    def __len__(self):
+        return len(self.img_files)
+
+    def __getitem__(self, index):
+        img_path = self.img_files[index]  # linear, shuffled, or image_weights
+        # Load image
+        img, (h0, w0) = self.rgb_loader(img_path)
+        w_img = self.weak_transform(img)
+        s_img = self.strong_transform(w_img)
+        w_img = self.to_tensor(w_img)
+        s_img = self.to_tensor(s_img)
+        # shapes =
+
+        return w_img, s_img, self.img_files[index]
+
+    @staticmethod
+    def rgb_loader(path):
+        # loads 1 image from dataset, returns img, original hw, resized hw
+        # img = self.imgs[idx]
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            h0, w0 = img.size
+
+            return img.convert('RGB'), (h0, w0)

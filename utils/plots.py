@@ -294,9 +294,10 @@ def plot_labels(labels, save_dir=Path(''), loggers=None):
     plt.close()
 
     # loggers
-    for k, v in loggers.items() or {}:
-        if k == 'wandb' and v:
-            v.log({"Labels": [v.Image(str(x), caption=x.name) for x in save_dir.glob('*labels*.jpg')]}, commit=False)
+    if loggers is not None:
+        for k, v in loggers.items() or {}:
+            if k == 'wandb' and v:
+                v.log({"Labels": [v.Image(str(x), caption=x.name) for x in save_dir.glob('*labels*.jpg')]}, commit=False)
 
 
 def plot_evolution(yaml_file='data/hyp.finetune.yaml'):  # from utils.plots import *; plot_evolution()

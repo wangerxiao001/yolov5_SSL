@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 from threading import Thread
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import numpy as np
 import torch
@@ -53,7 +54,6 @@ def test(data,
 
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
-        # print(model)
         imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
 
         # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
@@ -98,7 +98,7 @@ def test(data,
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    processed_image_ids = [] # edited by wang001
+    processed_image_ids = []  # edited by wang001
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -118,7 +118,7 @@ def test(data,
 
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
-            lb = [targets[targets[:, 0] == i, 1:] for i in range (nb)] if save_hybrid else []  # for autolabelling
+            lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb)
             t1 += time_synchronized() - t
@@ -146,8 +146,9 @@ def test(data,
                 for *xyxy, conf, cls in predn.tolist():
                     xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                     line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
-                    with open(save_dir / 'labels' / (path.stem + '.txt'), 'a') as f:
-                        f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                    if conf >= 0.9:
+                        with open(save_dir / 'labels' / (path.stem + '.txt'), 'a') as f:
+                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
             # W&B logging
             if plots and len(wandb_images) < log_imgs:
@@ -296,7 +297,7 @@ def test(data,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
-    parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp6/weights/best.pt',
+    parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp/weights/best.pt',
                         help='model.pt path(s)')
     parser.add_argument('--data', type=str, default='ipsc_yolo.yaml', help='*.data path')
     parser.add_argument('--batch-size', type=int, default=32, help='size of each image batch')
