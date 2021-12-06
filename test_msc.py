@@ -1,9 +1,10 @@
-import argparse
-import json
 import os
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+import json
+import argparse
 from pathlib import Path
 from threading import Thread
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import numpy as np
 import torch
 import yaml
@@ -35,6 +36,8 @@ def test(data,
          save_txt=False,  # for auto-labelling
          save_hybrid=False,  # for hybrid auto-labelling
          save_conf=False,  # save auto-label confidences
+         img_ids_dict=None,
+         anno_json=None,
          plots=True,
          log_imgs=0,  # number of logged images
          compute_loss=None):
@@ -53,7 +56,6 @@ def test(data,
 
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
-        # print(model)
         imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
 
         # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
@@ -94,11 +96,11 @@ def test(data,
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     coco91class = coco80_to_coco91_class()
-    s = ('%20s' + '%12s' * 7) % ('Class', 'Images', 'Targets', 'P', 'R', 'f1', 'mAP@.5', 'mAP@.5:.95')
-    p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
+    s = ('%20s' + '%12s' * 8) % ('Class', 'Images', 'Targets', 'P', 'R', 'f1', 'mAP@.5', 'mAP@.75', 'mAP@.5:.95')
+    p, r, f1, mp, mr, map50, map75, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    processed_image_ids = [] # edited by wang001
+    processed_image_ids = []  # edited by wang001
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -109,6 +111,7 @@ def test(data,
         with torch.no_grad():
             # Run model
             t = time_synchronized()
+            # inf_out: [bs, num_anchors, num_class + 5]
             inf_out, train_out = model(img, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
 
@@ -116,9 +119,9 @@ def test(data,
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
 
-            # Run NMS
+            # Run NMS targets: [num, 6]
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
-            lb = [targets[targets[:, 0] == i, 1:] for i in range (nb)] if save_hybrid else []  # for autolabelling
+            lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb)
             t1 += time_synchronized() - t
@@ -163,10 +166,15 @@ def test(data,
             if save_json:
                 # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
                 # image_id = int(path.stem) if path.stem.isnumeric() else path.stem
-                image_id_stem = Path(paths[si]).stem
-                fname_list = image_id_stem.split("d_")
-                fname_list1 = fname_list[1].split('_')
-                image_id = int(fname_list[0] + fname_list1[0] + fname_list1[1])
+                # image_id_stem = Path(paths[si]).stem
+                # fname_list = image_id_stem.split("d_")
+                # fname_list1 = fname_list[1].split('_')
+                # image_id = int(fname_list[0] + fname_list1[0] + fname_list1[1])
+                with open(img_ids_dict) as f:
+                    image_id = json.load(f)
+                img_name = path.name
+                image_id = image_id[img_name]
+
                 processed_image_ids.append(int(image_id))
                 box = xyxy2xywh(predn[:, :4])  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
@@ -224,21 +232,21 @@ def test(data,
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
-        ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
+        ap50, ap75, ap = ap[:, 0], ap[:, 5], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         # mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
-        mp, mr, mf1, map50, map = p.mean(), r.mean(), f1.mean(), ap50.mean(), ap.mean()
+        mp, mr, mf1, map50, map75, map = p.mean(), r.mean(), f1.mean(), ap50.mean(), ap75.mean(), ap.mean()
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
 
     # Print results
-    pf = '%20s' + '%12.3g' * 7  # print format
-    print(pf % ('all', seen, nt.sum(), mp, mr, mf1, map50, map))
+    pf = '%20s' + '%12.3g' * 8  # print format
+    print(pf % ('all', seen, nt.sum(), mp, mr, mf1, map50, map75, map))
 
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
-            print(pf % (names[c], seen, nt[c], p[i], r[i], f1[i], ap50[i], ap[i]))
+            print(pf % (names[c], seen, nt[c], p[i], r[i], f1[i], ap50[i], ap75[i], ap[i]))
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (imgsz, imgsz, batch_size)  # tuple
@@ -257,7 +265,7 @@ def test(data,
         # print('[dump!]')
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         # anno_json = '../coco/annotations/instances_val2017.json'  # annotations json
-        anno_json = '/home/ubuntu/wangxinglie/datasets/MSC/msc_1104/msc_p5_1113/annotations/instances_test2020.json'  # annotations json
+        # anno_json = '/home/ubuntu/wangxinglie/datasets/MSC/msc_1104/msc_p5_1113/annotations/instances_test2020.json'  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
         print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
         with open(pred_json, 'w') as f:
@@ -296,17 +304,18 @@ def test(data,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
-    parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp6/weights/best.pt',
+    parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp70/weights/best.pt',
                         help='model.pt path(s)')
-    parser.add_argument('--data', type=str, default='ipsc_yolo.yaml', help='*.data path')
+    parser.add_argument('--data', type=str, default='msc_yolo_0920.yaml', help='*.data path')
     parser.add_argument('--batch-size', type=int, default=32, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
+    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--task', default='test', help="'val', 'test', 'study'")
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
+    # parser.add_argument('--augment', default=True, help='augmented inference')
     parser.add_argument('--verbose', action='store_true', help='report mAP by class')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
@@ -315,9 +324,13 @@ if __name__ == '__main__':
     parser.add_argument('--project', default='runs/test', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    parser.add_argument('--ids-file', type=str, default='msc_ssl_data/test_ids/name_ids_p5.json',
+                        help='image ids file')
+    parser.add_argument('--anno-json', type=str, default='msc_ssl_data/test_ids/instances_test2020_p5.json',
+                        help='coco annotation file')
     opt = parser.parse_args()
-    # opt.save_json |= opt.data.endswith('coco.yaml')
-    opt.save_json |= opt.data.endswith('ipsc_yolo.yaml')
+    opt.save_json |= opt.data.endswith('coco.yaml')
+    # opt.save_json |= opt.data.endswith('ipsc_yolo.yaml')
     opt.data = check_file(opt.data)  # check file
     print(opt)
     check_requirements()
@@ -336,6 +349,8 @@ if __name__ == '__main__':
              save_txt=opt.save_txt | opt.save_hybrid,
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
+             img_ids_dict=opt.ids_file,
+             anno_json=opt.anno_json,
              )
 
     elif opt.task == 'speed':  # speed benchmarks

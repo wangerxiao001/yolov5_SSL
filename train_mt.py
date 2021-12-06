@@ -15,7 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.general import init_seeds, set_logging, check_git_status, check_requirements, check_file, \
     increment_path, get_latest_run
 from utils.torch_utils import select_device
-from utils.trainer import MTeacherTrainer
+# from utils.trainer import MTeacherTrainer
+from utils.trainer2 import MTeacherTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +25,12 @@ class Options():
     def __init__(self):
         parser = argparse.ArgumentParser(description='PyTorch Detecion.')
         # model and dataset
-        parser.add_argument('--data', type=str, default='data/ipsc_yolo_semi.yaml', help='data.yaml path')
+        parser.add_argument('--data', type=str, default='data/ipsc_yolo_ssl.yaml', help='data.yaml path')
         parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
         parser.add_argument('--image-weights', action='store_true', help='use weighted image selection for training')
         parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
         parser.add_argument('--quad', action='store_true', help='quad dataloader')
-        parser.add_argument('--weights', type=str, default='yolov5s.pt', help='initial weights path')
+        parser.add_argument('--weights', type=str, default='yolov5m.pt', help='initial weights path')
 
         # training hyper params
         parser.add_argument('--unsup-loss-weight', type=float, default=0.5, help='Weight for unsupervised weight')
@@ -40,9 +41,9 @@ class Options():
         parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
         parser.add_argument('--epochs', type=int, default=200, help='Number of total epochs, including burn-in epochs.')
         parser.add_argument('--ema-rate', type=float, default=0.9996, help='Weight for teacher model in mean-teacher')
-        parser.add_argument('--burnin-epochs', type=int, default=80, help='Burn in epochs before mean-teacher training')
+        parser.add_argument('--burnin-epochs', type=int, default=100, help='Burn in epochs before mean-teacher training')
         parser.add_argument('--iou-thresh-mt', type=float, default=0.6, help='iou thresh for generating pseudo label')
-        parser.add_argument('--conf_thresh-mt', type=float, default=0.8, help='confidence thresh for pseudo label.')
+        parser.add_argument('--conf_thresh-mt', type=float, default=0.85, help='confidence thresh for pseudo label.')
         parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
         parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
         parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')

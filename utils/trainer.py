@@ -160,6 +160,7 @@ class MTeacherTrainer:
 
     def train_loop(self, start_epoch, max_epoch):
         # number of warmup iterations, max(3 epochs, 1k iterations)
+        t0 = time.time()
         self.nw = max(round(self.hyp['warmup_epochs'] * self.nb), 1000)
         self.maps = np.zeros(self.nc)
         self.results_sup = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
@@ -174,7 +175,9 @@ class MTeacherTrainer:
         for self.epoch in range(start_epoch, max_epoch):
             self.model.train()
             self.run_step_full_semisup()
-        pass
+        self.logger.info(
+            '%g epochs completed in %.3f hours.\n' % (self.epoch - start_epoch + 1, (time.time() - t0) / 3600))
+        print(f'best weight save as {self.weight_best_un}')
 
     def run_step_full_semisup(self):
         # burn-in stage

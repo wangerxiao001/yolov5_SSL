@@ -160,6 +160,7 @@ class MTeacherTrainer:
 
     def train_loop(self, start_epoch, max_epoch):
         # number of warmup iterations, max(3 epochs, 1k iterations)
+        t0 = time.time()
         self.nw = max(round(self.hyp['warmup_epochs'] * self.nb), 1000)
         self.maps = np.zeros(self.nc)
         self.results_sup = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
@@ -174,7 +175,9 @@ class MTeacherTrainer:
         for self.epoch in range(start_epoch, max_epoch):
             self.model.train()
             self.run_step_full_semisup()
-        pass
+        self.logger.info(
+            '%g epochs completed in %.3f hours.\n' % (self.epoch - start_epoch + 1, (time.time() - t0) / 3600))
+        print(f'best weight save as {self.weight_best_un}')
 
     def run_step_full_semisup(self):
         # burn-in stage
@@ -300,10 +303,15 @@ class MTeacherTrainer:
                               (self.results_file, self.opt.bucket, self.opt.name))
 
                 # Log
-                tags = ['train_burnin/box_loss', 'train_burnin/obj_loss', 'train_burnin/cls_loss',  # train loss
-                        'metrics_burnin/precision', 'metrics_burnin/recall', 'metrics_burnin/mAP_0.5',
-                        'metrics_burnin/mAP_0.5:0.95', 'val_burnin/box_loss', 'val_burnin/obj_loss',  # val loss
-                        'val_burnin/cls_loss', 'x_burnin/lr0', 'x_burnin/lr1', 'x_burnin/lr2']  # params
+                # tags = ['train_burnin/box_loss', 'train_burnin/obj_loss', 'train_burnin/cls_loss',  # train loss
+                #         'metrics_burnin/precision', 'metrics_burnin/recall', 'metrics_burnin/mAP_0.5',
+                #         'metrics_burnin/mAP_0.5:0.95', 'val_burnin/box_loss', 'val_burnin/obj_loss',  # val loss
+                #         'val_burnin/cls_loss', 'x_burnin/lr0', 'x_burnin/lr1', 'x_burnin/lr2']  # params
+                # Log
+                tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                        'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5',
+                        'metrics/mAP_0.5:0.95', 'val/box_loss', 'val/obj_loss',  # val loss
+                        'val/cls_loss', 'x/lr0', 'x/lr1', 'x/lr2']  # params
                 for x, tag in zip(list(self.mloss_buruin[:-1]) + list(self.results_sup) + self.lr, tags):
                     if self.tb_writer:
                         self.tb_writer.add_scalar(tag, x, self.epoch)  # tensorboard
@@ -332,21 +340,21 @@ class MTeacherTrainer:
 
         else:
             # re-initialize lr scheduler for teacher-student mutual training
-            self.initilize_lr_scheduler()
+            # self.initilize_lr_scheduler()
             self.mloss_mt = torch.zeros(4, device=self.device)  # mean loss
 
             if self.epoch == self.burnin_epochs:
-                # if self.rank in [-1, 0]:
-                # update copy the the whole model
-                ckpt = torch.load(self.weight_best_sup, map_location=self.device)  # load checkpoint
-                # self.teacher_model = Model(self.opt.cfg or ckpt['model'].yaml, ch=3, nc=self.nc).to(self.device)
-                state_dict = ckpt['model'].float().state_dict()  # to FP32
-                state_dict = intersect_dicts(state_dict, self.teacher_model.state_dict())  # intersect
-                self.teacher_model.load_state_dict(state_dict, strict=False)  # load
-                self.logger.info('Transferred %g/%g items from %s' %
-                                 (len(state_dict), len(self.teacher_model.state_dict()), self.weight_best_sup))
-                del ckpt, state_dict
-                # self._update_teacher_model(keep_rate=0.00)
+                with torch_distributed_zero_first(self.rank):
+                    # if self.rank in [-1, 0]:
+                    ckpt = torch.load(self.weight_best_sup, map_location=self.device)  # load checkpoint
+                    # self.teacher_model = Model(self.opt.cfg or ckpt['model'].yaml, ch=3, nc=self.nc).to(self.device)
+                    state_dict = ckpt['model'].float().state_dict()  # to FP32
+                    state_dict = intersect_dicts(state_dict, self.teacher_model.state_dict())  # intersect
+                    self.teacher_model.load_state_dict(state_dict, strict=False)  # load
+                    self.logger.info('Transferred %g/%g items from %s' %
+                                     (len(state_dict), len(self.teacher_model.state_dict()), self.weight_best_sup))
+                    del ckpt, state_dict
+                    # self._update_teacher_model(keep_rate=0.00)
 
             # else:
             #     self._update_teacher_model(keep_rate=self.ema_rate)
@@ -442,8 +450,8 @@ class MTeacherTrainer:
                             loss_pseudo *= self.opt.world_size  # gradient averaged between devices in DDP mode
 
                     else:
-                        loss_pseudo = torch.zeros(1)
-                        loss_pseudo_items = torch.zeros(4)
+                        loss_pseudo = torch.zeros(1).to(self.device)
+                        loss_pseudo_items = torch.zeros(4).to(self.device)
 
                     # labeled data forward
                     imgs = imgs.to(self.device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
@@ -456,7 +464,7 @@ class MTeacherTrainer:
                         loss_l *= 4.
 
                     total_loss = loss_l + self.unsup_loss_weight * loss_pseudo
-                    total_loss_items =self.unsup_loss_weight * loss_pseudo_items + loss_l_items
+                    total_loss_items = self.unsup_loss_weight * loss_pseudo_items + loss_l_items
 
                 # Backward
                 self.scaler.scale(total_loss).backward()
@@ -521,10 +529,14 @@ class MTeacherTrainer:
                               (self.results_file, self.opt.bucket, self.opt.name))
 
                 # Log
-                tags = ['train_mt/box_loss', 'train_mt/obj_loss', 'train_mt/cls_loss',  # train loss
-                        'metrics_mt/precision', 'metrics_mt/recall', 'metrics_mt/mAP_0.5',
-                        'metrics_mt/mAP_0.5:0.95', 'val_mt/box_loss', 'val_mt/obj_loss',  # val loss
-                        'val_mt/cls_loss', 'x_mt/lr0', 'x_mt/lr1', 'x_mt/lr2']  # params
+                # tags = ['train_mt/box_loss', 'train_mt/obj_loss', 'train_mt/cls_loss',  # train loss
+                #         'metrics_mt/precision', 'metrics_mt/recall', 'metrics_mt/mAP_0.5',
+                #         'metrics_mt/mAP_0.5:0.95', 'val_mt/box_loss', 'val_mt/obj_loss',  # val loss
+                #         'val_mt/cls_loss', 'x_mt/lr0', 'x_mt/lr1', 'x_mt/lr2']  # params
+                tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                        'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5',
+                        'metrics/mAP_0.5:0.95', 'val/box_loss', 'val/obj_loss',  # val loss
+                        'val/cls_loss', 'x/lr0', 'x_mt', 'x_mt']  # params
                 for x, tag in zip(list(self.mloss_mt[:-1]) + list(self.results_un) + self.lr, tags):
                     if self.tb_writer:
                         self.tb_writer.add_scalar(tag, x, self.epoch)  # tensorboard
@@ -697,7 +709,7 @@ class MTeacherTrainer:
             self.mlc, self.nc, self.opt.data, self.nc - 1)
         if self.rank in [-1, 0]:
             self.ema.updates = self.start_epoch * self.nb // self.accumulate
-            self.testloader = create_dataloader(self.test_path, self.imgsz_test, self.batch_size * 2, self.gs, self.opt,
+            self.testloader = create_dataloader(self.val_path, self.imgsz_test, self.batch_size * 2, self.gs, self.opt,
                                                 hyp=self.hyp, cache=self.opt.cache_images and not self.opt.notest,
                                                 rect=True,
                                                 rank=-1, world_size=self.opt.world_size, workers=self.opt.workers,
