@@ -28,7 +28,7 @@ Smililar to the original yolov5, but with some adjustment as follows. We recomme
 - "-run-test": Run test after training
 
 ### 2.2 Config file
-Similar to the [original config file of yolov5] (https://github.com/ultralytics/yolov5/blob/1075488d893f2167737d89549c3f675b0713aa5a/data/coco128.yaml), with the un-labeled data directory "train_u" added
+Similar to the [original config file of yolov5](https://github.com/ultralytics/yolov5/blob/1075488d893f2167737d89549c3f675b0713aa5a/data/coco.yaml), with the un-labeled data directory "train_u" added
 ```
 # create by wangerxiao001
 # date: 2021-11-29
