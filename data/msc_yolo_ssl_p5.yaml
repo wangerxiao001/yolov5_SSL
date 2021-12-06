@@ -1,0 +1,17 @@
+# create by wangerxiao9527
+# date: 2020-07-23
+# train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
+train: ./msc_ssl_data/images/train_p5/
+val: ./msc_ssl_data/images/val_p5/
+test: ./msc_ssl_data/images/test_p5/
+train_u: ./msc_ssl_data/images_p8_p10/
+
+# number of classes
+nc: 2
+
+# class name
+names: ['Aging', 'Young']
+
+# this is coco anchors, change it if necessary
+anchors_scales: '[2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)]'
+anchors_ratios: '[(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]'
